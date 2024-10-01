@@ -94,7 +94,7 @@ class ClockSwitchFSM(Module):
 
 
 class _RtioSysCRG(Module, AutoCSR):
-    def __init__(self, platform, enable_sys5x=False):
+    def __init__(self, platform, enable_sys5x=False, bootstrap_100mhz=False):
         self.clock_domains.cd_sys = ClockDomain()
         self.clock_domains.cd_sys4x = ClockDomain(reset_less=True)
         self.clock_domains.cd_sys4x_dqs = ClockDomain(reset_less=True)
@@ -109,6 +109,7 @@ class _RtioSysCRG(Module, AutoCSR):
         self.switch_done = CSRStatus()
 
         self._configured = False
+        self.bootstrap_100mhz = bootstrap_100mhz
 
         # bootstrap clock
         clk125 = platform.request("clk125_gtp")
@@ -130,6 +131,7 @@ class _RtioSysCRG(Module, AutoCSR):
         pll_clk125 = Signal()
         pll_fb = Signal()
         self.pll_locked = Signal()
+        clk1_div = 10 if bootstrap_100mhz else 8
         self.specials += [
             Instance("PLLE2_BASE",
                 p_CLKIN1_PERIOD=16.0,
@@ -144,8 +146,8 @@ class _RtioSysCRG(Module, AutoCSR):
 
                 # 200MHz for IDELAYCTRL
                 p_CLKOUT0_DIVIDE=5, p_CLKOUT0_PHASE=0.0, o_CLKOUT0=pll_clk200,
-                # 125MHz for bootstrap
-                p_CLKOUT1_DIVIDE=8, p_CLKOUT1_PHASE=0.0, o_CLKOUT1=pll_clk125
+                # 125MHz/100MHz for bootstrap
+                p_CLKOUT1_DIVIDE=clk1_div, p_CLKOUT1_PHASE=0.0, o_CLKOUT1=pll_clk125
             ),
             Instance("BUFG", i_I=pll_clk125, o_O=self.cd_bootstrap.clk),
             Instance("BUFG", i_I=pll_clk200, o_O=self.cd_clk200.clk),
@@ -180,13 +182,14 @@ class _RtioSysCRG(Module, AutoCSR):
         mmcm_sys4x = Signal()
         mmcm_sys4x_dqs = Signal()
 
+        clk_period = 10. if self.bootstrap_100mhz else 8.
         if self.enable_sys5x:
             mmcm_sys5x = Signal()
             self.specials += [
                 Instance("MMCME2_ADV",
-                    p_CLKIN1_PERIOD=8.0,
+                    p_CLKIN1_PERIOD=clk_period,
                     i_CLKIN1=main_clk,
-                    p_CLKIN2_PERIOD=8.0,
+                    p_CLKIN2_PERIOD=clk_period,
                     i_CLKIN2=self.cd_bootstrap.clk,
 
                     i_CLKINSEL=self.clk_sw_fsm.o_clk_sw,
@@ -196,16 +199,16 @@ class _RtioSysCRG(Module, AutoCSR):
                     o_CLKFBOUT=mmcm_fb_out,
                     o_LOCKED=self.mmcm_locked,
 
-                    # VCO @ 1.25GHz with MULT=10
+                    # VCO @ 1.25GHz/1GHz with MULT=10
                     p_CLKFBOUT_MULT_F=10, p_DIVCLK_DIVIDE=1,
 
-                    # 500MHz. Must be more than 400MHz as per DDR3 specs.
+                    # 500MHz/400MHz. Must be more than 400MHz as per DDR3 specs.
                     p_CLKOUT0_DIVIDE_F=2.5, p_CLKOUT0_PHASE=0.0, o_CLKOUT0=mmcm_sys4x,
 
-                    # 125MHz
+                    # 125MHz/100MHz
                     p_CLKOUT1_DIVIDE=10, p_CLKOUT1_PHASE=0.0, o_CLKOUT1=mmcm_sys,
 
-                    # 625MHz
+                    # 625MHz/500MHz
                     p_CLKOUT2_DIVIDE=2, p_CLKOUT2_PHASE=0.0, o_CLKOUT2=mmcm_sys5x,
                 ),
                 Instance("MMCME2_BASE",
@@ -372,7 +375,8 @@ class BaseSoC(SoCSDRAM):
         SoCSDRAM.__init__(self, platform, cpu_reset_address=0x400000, clk_freq=clk_freq, **kwargs)
 
         if rtio_sys_merge:
-            self.submodules.crg = _RtioSysCRG(platform, enable_sys5x)
+            bootstrap_100mhz = clk_freq == 100e6
+            self.submodules.crg = _RtioSysCRG(platform, enable_sys5x, bootstrap_100mhz)
             self.csr_devices.append("crg")
         else:
             self.submodules.crg = _SysCRG(platform)
