@@ -35,7 +35,7 @@ class AsyncResetSynchronizerBUFG(Module):
 
 
 class _RtioSysCRG(Module, AutoCSR):
-    def __init__(self, platform, hw_rev):
+    def __init__(self, platform, clk_freq=125e6):
         self.clock_domains.cd_sys = ClockDomain()
         self.clock_domains.cd_sys4x = ClockDomain(reset_less=True)
         self.clock_domains.cd_sys4x_dqs = ClockDomain(reset_less=True)
@@ -111,36 +111,44 @@ class _RtioSysCRG(Module, AutoCSR):
         mmcm_sys4x_dqs = Signal()
         mmcm_sys5x = Signal()
         self.reset = Signal()
-        self.specials.mmcm = Instance("MMCME2_BASE",
-            p_CLKIN1_PERIOD=16.0,
-            i_CLKIN1=clk125_div2,
-
-            i_RST=self.reset,
-
-            i_CLKFBIN=mmcm_fb_in,
-            o_CLKFBOUT=mmcm_fb_out,
-            o_LOCKED=mmcm_locked,
-
-            # VCO @ 1.25GHz with MULT=20
-            p_CLKFBOUT_MULT_F=20, p_DIVCLK_DIVIDE=1,
-
-            # 500MHz. Must be more than 400MHz as per DDR3 specs.
-            p_CLKOUT0_DIVIDE_F=2.5, p_CLKOUT0_PHASE=0.0, o_CLKOUT0=mmcm_sys4x,
-
-            # 125MHz
-            p_CLKOUT1_DIVIDE=10, p_CLKOUT1_PHASE=0.0, o_CLKOUT1=mmcm_sys,
-
-            # 625MHz
-            p_CLKOUT2_DIVIDE=2, p_CLKOUT2_PHASE=0.0, o_CLKOUT2=mmcm_sys5x,
-        )
+        if clk_freq == 125e6:
+            clkmult = 20
+            dqsper = 2.0
+        elif clk_freq == 100e6:
+            clkmult = 16
+            dqsper = 2.5
+        else:
+            raise ValueError("Only 100 and 125MHz clock frequencies are supported")
         self.specials += [
+            Instance("MMCME2_BASE",
+                p_CLKIN1_PERIOD=16.0,
+                i_CLKIN1=self.clk125_div2,
+
+                i_RST=self.reset,
+
+                i_CLKFBIN=mmcm_fb_in,
+                o_CLKFBOUT=mmcm_fb_out,
+                o_LOCKED=mmcm_locked,
+
+                # VCO @ 1.25GHz with MULT=20, 1 GHz with MULT=16
+                p_CLKFBOUT_MULT_F=clkmult, p_DIVCLK_DIVIDE=1,
+
+                # 500MHz/400MHz. Must be more than 400MHz as per DDR3 specs.
+                p_CLKOUT0_DIVIDE_F=2.5, p_CLKOUT0_PHASE=0.0, o_CLKOUT0=mmcm_sys4x,
+
+                # 125MHz/100MHz
+                p_CLKOUT1_DIVIDE=10, p_CLKOUT1_PHASE=0.0, o_CLKOUT1=mmcm_sys,
+
+                # 625MHz/500MHz
+                p_CLKOUT2_DIVIDE=2, p_CLKOUT2_PHASE=0.0, o_CLKOUT2=mmcm_sys5x,
+            ),
             Instance("BUFG", i_I=mmcm_sys, o_O=self.cd_sys.clk),
             Instance("BUFG", i_I=mmcm_sys4x, o_O=self.cd_sys4x.clk),
             Instance("BUFG", i_I=mmcm_sys5x, o_O=self.cd_sys5x.clk),
             Instance("BUFG", i_I=mmcm_fb_out, o_O=mmcm_fb_in),
 
             Instance("MMCME2_BASE",
-                p_CLKIN1_PERIOD=2.0,
+                p_CLKIN1_PERIOD=dqsper,
                 i_CLKIN1=self.cd_sys4x.clk,
 
                 i_RST=~mmcm_locked,
@@ -186,7 +194,7 @@ class BaseSoC(SoCSDRAM):
 
         self.config["HW_REV"] = hw_rev
 
-        self.submodules.crg = _RtioSysCRG(platform, hw_rev=hw_rev)
+        self.submodules.crg = _RtioSysCRG(platform, clk_freq, hw_rev=hw_rev)
         self.csr_devices.append("crg")
 
         self.platform.add_period_constraint(self.crg.cd_sys.clk, 1e9/self.clk_freq)
@@ -214,7 +222,7 @@ class BaseSoC(SoCSDRAM):
             self.flash_boot_address = 0x650000
             self.register_rom(self.spiflash.bus, 16*1024*1024)
             self.csr_devices.append("spiflash")
-        
+
         self.submodules.icap = icap.ICAP("7series", platform=platform)
         self.csr_devices.append("icap")
 
